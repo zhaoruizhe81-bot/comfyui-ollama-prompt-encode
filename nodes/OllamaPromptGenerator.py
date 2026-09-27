@@ -12,7 +12,7 @@ import re
 import urllib.request
 
 from ollama import Client, Options
-from .timeout import timeout
+from .timeout import timeout as with_timeout
 
 # Reasoning models (e.g. qwen3) may inline their chain of thought; it must
 # never reach the CLIP encoder.
@@ -150,7 +150,7 @@ class OllamaPromptGenerator:
         use_seed = seed if seed != 0 else None
         messages = self._build_messages(system_prompt, description, comma_separated_response)
 
-        @timeout(timeout)
+        @with_timeout(timeout)
         def call_llm():
             if llm_provider == "openai":
                 return self._chat_openai(base_url, api_key, model, messages, use_seed, timeout)
