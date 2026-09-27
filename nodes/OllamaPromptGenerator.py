@@ -9,6 +9,7 @@ import os
 import csv
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -159,10 +160,13 @@ class OllamaPromptGenerator:
         }
         if seed:
             payload["seed"] = int(seed)
-        # Some reasoning models (kimi-k2.7-code-*, ...) only accept their
-        # server-default temperature; retry once without the field instead of
-        # failing, and surface the response body on any other HTTP error.
-        for attempt in range(2):
+        # OpenAI-compat quirk handling: temperature-locked reasoning models
+        # (kimi-k2.7-code-*, ...) reject any other value — retry once without
+        # the field. Free/shared inference pools return transient 429s — back
+        # off and retry those too. Anything else surfaces with its body.
+        dropped_temperature = False
+        rate_limit_retries = 0
+        while True:
             request = urllib.request.Request(
                 endpoint,
                 data=json.dumps(payload).encode("utf-8"),
@@ -177,8 +181,17 @@ class OllamaPromptGenerator:
                 return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace")
-                if attempt == 0 and "temperature" in body and "temperature" in payload:
+                if not dropped_temperature and "temperature" in body and "temperature" in payload:
                     del payload["temperature"]
+                    dropped_temperature = True
+                    continue
+                if e.code == 429 and rate_limit_retries < 2:
+                    rate_limit_retries += 1
+                    try:
+                        wait = min(float(e.headers.get("Retry-After", 0)) or 15.0, 30.0)
+                    except ValueError:
+                        wait = 15.0
+                    time.sleep(wait)
                     continue
                 raise RuntimeError(
                     "OpenAI-compatible API error %s at %s: %s" % (e.code, endpoint, body[:500])
