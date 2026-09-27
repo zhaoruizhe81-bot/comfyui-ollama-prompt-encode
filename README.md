@@ -102,3 +102,32 @@ python -m unittest
 [Michael Standen](https://michael.standen.link)
 
 This software is provided under the [MIT License](https://tldrlegal.com/license/mit-license) so it's free to use so long as you give me credit.
+
+## Fork: LLM providers, system prompt separation and fixes
+
+This fork (`zhaoruizhe81-bot`) extends version 2.2.0 with the following changes (v2.3.0):
+
+### OpenAI-compatible providers
+
+`llm_provider` switches between:
+
+- `ollama` — the native Ollama API (default, `base_url` like `http://localhost:11434`)
+- `openai` — any OpenAI-compatible `/v1/chat/completions` endpoint (llama.cpp server, vLLM, LM Studio, one-api/new-api relays, ...). `base_url` accepts `http://host:8000` or `http://host:8000/v1`; `api_key` is sent as a Bearer token (`EMPTY` works for local servers).
+
+Ollama itself exposes an OpenAI-compatible endpoint, so `openai` + `http://localhost:11434/v1` also works.
+
+### System prompt / description split
+
+The old single `text` input is replaced by:
+
+- `system_prompt` — instructions for the LLM. Leave it **empty** to keep the built-in behaviour (comma/descriptive system message + few-shot samples from the bundled CSVs).
+- `description` — the scene description to expand/translate.
+
+`ollama_model` was renamed to `model` and a `timeout` input (default 300s) replaces the old hardcoded 60s limit. **This is a breaking change**: re-add the node in existing workflows.
+
+### Fixes
+
+- The CLIP encode path now keeps every extra conditioning key (`attention_mask`, hook keys) returned by `encode_token_weights`. The old code dropped them, which corrupted conditioning on mask-dependent CLIP types (`qwen_image`) and produced pure noise. See [upstream issue #11](https://github.com/ScreamingHawk/comfyui-ollama-prompt-encode/issues/11) and [PR #12](https://github.com/ScreamingHawk/comfyui-ollama-prompt-encode/pull/12).
+- `<think>...</think>` blocks from reasoning models (qwen3 etc.) are stripped before CLIP encoding.
+- The Ollama model pull is now on-demand (only when the model is missing) and best-effort, instead of a mandatory registry call on every generation.
+- `prepend_tags` no longer produces a leading `", "` when the generated prompt or the tags are empty.

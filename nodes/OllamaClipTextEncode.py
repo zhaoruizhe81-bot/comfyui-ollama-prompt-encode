@@ -2,7 +2,7 @@
 @author: Michael Standen
 @title: Ollama Prompt Encode
 @nickname: Ollama Prompt Encode
-@description: Use AI to generate prompts and perform CLIP text encoding
+@description: Use LLMs (Ollama or any OpenAI-compatible API) to generate prompts and perform CLIP text encoding
 """
 
 from .OllamaPromptGenerator import OllamaPromptGenerator
@@ -11,15 +11,11 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
 
     @classmethod
     def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()["required"].copy()
         return {
             "required": {
                 "clip": ("CLIP",),
-                "ollama_url": ("STRING", {"default": cls.OLLAMA_URL}),
-                "ollama_model": ("STRING", {"default": cls.OLLAMA_MODEL}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "prepend_tags": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-                "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-                "comma_separated_response": ("BOOLEAN", {"default": True}),
+                **inputs,
             }
         }
 
@@ -35,11 +31,15 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
 
     CATEGORY = "Ollama"
 
-    def get_encoded(self, clip, ollama_url, ollama_model, seed, prepend_tags, text, comma_separated_response):
+    def get_encoded(self, clip, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout):
         """Gets and encodes the prompt using CLIP."""
-        combined_prompt = self.get_prompt(ollama_url, ollama_model, seed, prepend_tags, text, comma_separated_response)[0]
+        combined_prompt = self.get_prompt(llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout)[0]
 
         tokens = clip.tokenize(combined_prompt)
+        # return_dict=True keeps every extra key from encode_token_weights
+        # (attention_mask, hook keys, ...). Dropping them corrupts the
+        # conditioning on mask-dependent CLIPs (qwen_image etc.) and produces
+        # pure noise. See issue #11.
         cond_dict = clip.encode_from_tokens(tokens, return_pooled=True, return_dict=True)
         cond = cond_dict.pop("cond")
         return ([[cond, cond_dict]], combined_prompt)

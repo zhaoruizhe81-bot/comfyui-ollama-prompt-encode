@@ -1,14 +1,22 @@
 """
 @author: Michael Standen
-@title: Ollama Prompt Generator
-@nickname: Ollama Prompt Generator
-@description: Use AI to generate prompts
+@title: Ollama Prompt Encode
+@nickname: Ollama Prompt Encode
+@description: Use LLMs (Ollama or any OpenAI-compatible API) to generate prompts
 """
 
 import os
 import csv
+import json
+import re
+import urllib.request
+
 from ollama import Client, Options
 from .timeout import timeout
+
+# Reasoning models (e.g. qwen3) may inline their chain of thought; it must
+# never reach the CLIP encoder.
+THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 SYSTEM_MESSAGES = {
     "descriptive": "You describe pictures. I will give you a brief description of the picture. You will describe the picture in intricate detail. Describe clothing, pose, expression, setting, lighting, and any other details you can think of. Use long descriptive sentences.",
@@ -17,9 +25,9 @@ SYSTEM_MESSAGES = {
 
 class OllamaPromptGenerator:
     # Defaults
-    OLLAMA_TIMEOUT = 60
-    OLLAMA_URL = "http://localhost:11434"
-    OLLAMA_MODEL = "orca-mini"
+    DEFAULT_TIMEOUT = 300
+    DEFAULT_URL = "http://localhost:11434"
+    DEFAULT_MODEL = "huihui_ai/qwen3-abliterated:4b"
 
     def load_sample_data(self, comma_separated_response: bool = True):
         fname = "sample_data_comma.csv" if comma_separated_response else "sample_data_descriptive.csv"
@@ -34,12 +42,16 @@ class OllamaPromptGenerator:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "ollama_url": ("STRING", {"default": cls.OLLAMA_URL}),
-                "ollama_model": ("STRING", {"default": cls.OLLAMA_MODEL}),
+                "llm_provider": (["ollama", "openai"], {"default": "ollama"}),
+                "base_url": ("STRING", {"default": cls.DEFAULT_URL}),
+                "api_key": ("STRING", {"default": "EMPTY"}),
+                "model": ("STRING", {"default": cls.DEFAULT_MODEL}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "prepend_tags": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-                "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "system_prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "description": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "comma_separated_response": ("BOOLEAN", {"default": True}),
+                "timeout": ("INT", {"default": cls.DEFAULT_TIMEOUT, "min": 10, "max": 3600}),
             }
         }
 
@@ -55,51 +67,100 @@ class OllamaPromptGenerator:
 
     def sanitize_prompt(self, prompt):
         """Sanitize the prompt for use in clip encoding."""
-        return prompt.replace(".", ",")
+        prompt = THINK_BLOCK_RE.sub("", prompt)
+        prompt = prompt.replace(".", ",").replace("\n", ", ")
+        prompt = re.sub(r"\s*,\s*,+", ", ", prompt)
+        return prompt.strip(" ,\t\n")
 
-    @timeout(OLLAMA_TIMEOUT)
-    def generate_prompt(self, ollama_url, ollama_model, text, seed: int|None = None, comma_separated_response: bool = True):
-        """Get a prompt from the Ollama API."""
-        ollama_client = Client(host=ollama_url)
-
-        # Download the model if it doesn't exist
-        ollama_client.pull(ollama_model)
-
-        opts = Options()
-        if seed is not None:
-            opts["seed"] = seed
-            opts["temperature"] = 0.0
-
-        # System message
-        system_message = SYSTEM_MESSAGES["comma"] if comma_separated_response else SYSTEM_MESSAGES["descriptive"]
+    def _build_messages(self, system_prompt, description, comma_separated_response):
+        system_prompt = (system_prompt or "").strip()
+        if system_prompt:
+            # Custom system prompt: the user has full control, no few-shot data.
+            return [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": description},
+            ]
+        # Built-in behaviour: system message plus few-shot sample data.
+        system_message = SYSTEM_MESSAGES["comma" if comma_separated_response else "descriptive"]
         messages = [
             {"role": "system", "content": system_message},
         ]
-
-        # Sample data
-        sample_data = self.load_sample_data(comma_separated_response)
-        for row in sample_data:
+        for row in self.load_sample_data(comma_separated_response):
             messages.append({"role": "user", "content": "Write a prompt for: " + row["text"]})
             messages.append({"role": "assistant", "content": row["prompt"]})
+        messages.append({"role": "user", "content": "Write a prompt for: " + description})
+        return messages
 
-        # User prompt
-        messages.append({"role": "user", "content": "Write a prompt for: " + text})
-
-        response = ollama_client.chat(
-            model=ollama_model,
+    def _chat_ollama(self, base_url, model, messages, seed):
+        client = Client(host=base_url)
+        # Pull the model only if it is missing, and never let registry hiccups
+        # kill the node: if the model is truly absent, the chat call below
+        # raises a clear error.
+        try:
+            listed = client.list()
+            names = set()
+            for entry in getattr(listed, "models", listed):
+                names.add(getattr(entry, "model", None) or getattr(entry, "name", "") or "")
+            if model not in names:
+                client.pull(model)
+        except Exception:
+            pass
+        opts = Options()
+        if seed:
+            opts["seed"] = seed
+            opts["temperature"] = 0.0
+        response = client.chat(
+            model=model,
             messages=messages,
             options=opts,
             stream=False,
         )
+        return response["message"]["content"]
 
-        prompt = response["message"]["content"]
+    def _chat_openai(self, base_url, api_key, model, messages, seed, timeout_seconds):
+        base = base_url.rstrip("/")
+        if base.endswith("/chat/completions"):
+            endpoint = base
+        elif base.endswith("/v1"):
+            endpoint = base + "/chat/completions"
+        else:
+            endpoint = base + "/v1/chat/completions"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.0 if seed else 0.8,
+        }
+        if seed:
+            payload["seed"] = int(seed)
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + (api_key or "EMPTY"),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"]
 
-        return prompt
-
-    def get_prompt(self, ollama_url, ollama_model, seed, prepend_tags, text, comma_separated_response):
-        """Generates prompt using Ollama."""
+    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout):
+        """Generates prompt using the configured LLM provider."""
         use_seed = seed if seed != 0 else None
-        prompt = self.generate_prompt(ollama_url, ollama_model, text, use_seed, comma_separated_response)
-        combined_prompt = prepend_tags + ", " + self.sanitize_prompt(prompt)
+        messages = self._build_messages(system_prompt, description, comma_separated_response)
 
+        @timeout(timeout)
+        def call_llm():
+            if llm_provider == "openai":
+                return self._chat_openai(base_url, api_key, model, messages, use_seed, timeout)
+            return self._chat_ollama(base_url, model, messages, use_seed)
+
+        prompt = call_llm()
+        generated = self.sanitize_prompt(prompt)
+        prepend = (prepend_tags or "").strip(" ,")
+        if prepend and generated:
+            combined_prompt = prepend + ", " + generated
+        else:
+            combined_prompt = prepend or generated
         return (combined_prompt,)
