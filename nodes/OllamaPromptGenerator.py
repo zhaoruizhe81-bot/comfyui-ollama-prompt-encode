@@ -9,6 +9,7 @@ import os
 import csv
 import json
 import re
+import urllib.error
 import urllib.request
 
 from ollama import Client, Options
@@ -52,7 +53,11 @@ class OllamaPromptGenerator:
                 "description": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "comma_separated_response": ("BOOLEAN", {"default": True}),
                 "timeout": ("INT", {"default": cls.DEFAULT_TIMEOUT, "min": 10, "max": 3600}),
-            }
+            },
+            # Optional so workflows saved before v2.3.1 keep loading.
+            "optional": {
+                "temperature": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 2.0, "step": 0.05}),
+            },
         }
 
     RETURN_TYPES = (
@@ -91,7 +96,7 @@ class OllamaPromptGenerator:
         messages.append({"role": "user", "content": "Write a prompt for: " + description})
         return messages
 
-    def _chat_ollama(self, base_url, model, messages, seed):
+    def _chat_ollama(self, base_url, model, messages, seed, temperature):
         client = Client(host=base_url)
         # Pull the model only if it is missing, and never let registry hiccups
         # kill the node: if the model is truly absent, the chat call below
@@ -108,7 +113,7 @@ class OllamaPromptGenerator:
         opts = Options()
         if seed:
             opts["seed"] = seed
-            opts["temperature"] = 0.0
+        opts["temperature"] = 0.0 if seed else temperature
         response = client.chat(
             model=model,
             messages=messages,
@@ -117,7 +122,7 @@ class OllamaPromptGenerator:
         )
         return response["message"]["content"]
 
-    def _chat_openai(self, base_url, api_key, model, messages, seed, timeout_seconds):
+    def _chat_openai(self, base_url, api_key, model, messages, seed, timeout_seconds, temperature):
         base = base_url.rstrip("/")
         if base.endswith("/chat/completions"):
             endpoint = base
@@ -129,23 +134,36 @@ class OllamaPromptGenerator:
             "model": model,
             "messages": messages,
             "stream": False,
-            "temperature": 0.0 if seed else 0.8,
+            "temperature": 0.0 if seed else temperature,
         }
         if seed:
             payload["seed"] = int(seed)
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + (api_key or "EMPTY"),
-            },
-        )
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return data["choices"][0]["message"]["content"]
+        # Some reasoning models (kimi-k2.7-code-*, ...) only accept their
+        # server-default temperature; retry once without the field instead of
+        # failing, and surface the response body on any other HTTP error.
+        for attempt in range(2):
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + (api_key or "EMPTY"),
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")
+                if attempt == 0 and "temperature" in body and "temperature" in payload:
+                    del payload["temperature"]
+                    continue
+                raise RuntimeError(
+                    "OpenAI-compatible API error %s at %s: %s" % (e.code, endpoint, body[:500])
+                ) from e
 
-    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout):
+    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8):
         """Generates prompt using the configured LLM provider."""
         use_seed = seed if seed != 0 else None
         messages = self._build_messages(system_prompt, description, comma_separated_response)
@@ -153,8 +171,8 @@ class OllamaPromptGenerator:
         @with_timeout(timeout)
         def call_llm():
             if llm_provider == "openai":
-                return self._chat_openai(base_url, api_key, model, messages, use_seed, timeout)
-            return self._chat_ollama(base_url, model, messages, use_seed)
+                return self._chat_openai(base_url, api_key, model, messages, use_seed, timeout, temperature)
+            return self._chat_ollama(base_url, model, messages, use_seed, temperature)
 
         prompt = call_llm()
         generated = self.sanitize_prompt(prompt)

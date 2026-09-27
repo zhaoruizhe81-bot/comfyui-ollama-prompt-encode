@@ -11,12 +11,13 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
 
     @classmethod
     def INPUT_TYPES(cls):
-        inputs = super().INPUT_TYPES()["required"].copy()
+        inputs = super().INPUT_TYPES()
         return {
             "required": {
                 "clip": ("CLIP",),
-                **inputs,
-            }
+                **inputs["required"],
+            },
+            "optional": inputs.get("optional", {}),
         }
 
     RETURN_TYPES = (
@@ -31,9 +32,9 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
 
     CATEGORY = "Ollama"
 
-    def get_encoded(self, clip, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout):
+    def get_encoded(self, clip, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8):
         """Gets and encodes the prompt using CLIP."""
-        combined_prompt = self.get_prompt(llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout)[0]
+        combined_prompt = self.get_prompt(llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature)[0]
 
         tokens = clip.tokenize(combined_prompt)
         # return_dict=True keeps every extra key from encode_token_weights
