@@ -132,9 +132,10 @@ The old single `text` input is replaced by:
 - The Ollama model pull is now on-demand (only when the model is missing) and best-effort, instead of a mandatory registry call on every generation.
 - `prepend_tags` no longer produces a leading `", "` when the generated prompt or the tags are empty.
 
-### v2.4.0 — Ollama robustness options (optional inputs, old workflows keep working)
+### v2.4.x — Ollama robustness options (optional inputs, old workflows keep working)
 
 - `temperature` (v2.3.1) — sampling temperature, default 0.8. `seed != 0` still forces 0 for reproducibility. On `openai`, a temperature-locked reasoning model (e.g. `kimi-k2.7-code-*`, which only allows temperature 1) triggers an automatic retry without the field instead of an HTTP 400; API error bodies are now surfaced in the exception message.
-- `num_predict` (default 400, 0 = unlimited) — hard cap on generated tokens for the **Ollama path only**. Small local models sometimes ignore tag-count instructions or fall into repetition loops (observed: 915 tokens for a "15–40 tags" request); the cap bounds the worst case so a run can never stall until the timeout. Not sent on `openai` because reasoning models have provider-specific `max_tokens` semantics.
+- `num_predict` (default 1024, 0 = unlimited) — hard cap on generated tokens for the **Ollama path only**. Small local models sometimes ignore tag-count instructions or fall into repetition loops (observed: 915 tokens for a "15–40 tags" request); the cap bounds the worst case so a run can never stall until the timeout. Not sent on `openai` because reasoning models have provider-specific `max_tokens` semantics.
 - `repeat_penalty` (default 1.1, Ollama path only) — raises above 1.1 if a local model falls into tag-repetition loops.
-- The Ollama call passes `keep_alive=1m`, so the model unloads from VRAM a minute after each run instead of sitting there. On an 8GB card, a resident 3–4GB LLM next to ComfyUI's diffusion models causes WDDM paging that slows generation ~10x; the unload frees VRAM for sampling at the cost of a ~10s reload per run.
+- `think` (default off, Ollama path only) — allows reasoning chains (qwen3 etc.). Off by default: chain-of-thought is useless for tag generation, slow, and burns through `num_predict` before any content is produced (models that ignore the flag still get inline `<think>` stripped).
+- `keep_alive` (default `1m`, Ollama path only) — how long the model stays in VRAM after a run (`1m`, `10m`, `-1` = forever; empty = server default). On an 8GB card, a resident 3–4GB LLM next to ComfyUI's diffusion models causes WDDM paging that slows generation ~10x; unloading after each run frees VRAM for sampling at the cost of a ~10s reload.

@@ -33,7 +33,7 @@ class OllamaPromptGenerator:
     # hold this model alongside ComfyUI's diffusion models, and WDDM paging
     # then slows generation ~10x. Reload costs ~10s per run.
     OLLAMA_KEEP_ALIVE = "1m"
-    DEFAULT_NUM_PREDICT = 400
+    DEFAULT_NUM_PREDICT = 1024
 
     def load_sample_data(self, comma_separated_response: bool = True):
         fname = "sample_data_comma.csv" if comma_separated_response else "sample_data_descriptive.csv"
@@ -64,8 +64,14 @@ class OllamaPromptGenerator:
                 "temperature": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 2.0, "step": 0.05}),
                 # Ollama path only: cap generated tokens (0 = unlimited) so a
                 # looping small model cannot stall a run until the timeout.
-                "num_predict": ("INT", {"default": cls.DEFAULT_NUM_PREDICT, "min": 0, "max": 8192}),
-                "repeat_penalty": ("FLOAT", {"default": 1.1, "min": 1.0, "max": 2.0, "step": 0.05}),
+                "num_predict": ("INT", {"default": cls.DEFAULT_NUM_PREDICT, "min": 0, "max": 8192,
+                                        "tooltip": "Ollama only. Max generated tokens, 0 = unlimited"}),
+                "repeat_penalty": ("FLOAT", {"default": 1.1, "min": 1.0, "max": 2.0, "step": 0.05,
+                                             "tooltip": "Ollama only. Raise above 1.1 to break tag-repetition loops"}),
+                "think": ("BOOLEAN", {"default": False,
+                                      "tooltip": "Ollama only. Allow reasoning chains (qwen3 etc.) - slower, unnecessary for tags"}),
+                "keep_alive": ("STRING", {"default": cls.OLLAMA_KEEP_ALIVE,
+                                          "tooltip": "Ollama only. How long the model stays in VRAM after a run (1m, 10m, -1). Empty = server default"}),
             },
         }
 
@@ -105,7 +111,7 @@ class OllamaPromptGenerator:
         messages.append({"role": "user", "content": "Write a prompt for: " + description})
         return messages
 
-    def _chat_ollama(self, base_url, model, messages, seed, temperature, num_predict, repeat_penalty):
+    def _chat_ollama(self, base_url, model, messages, seed, temperature, num_predict, repeat_penalty, think, keep_alive):
         client = Client(host=base_url)
         # Pull the model only if it is missing, and never let registry hiccups
         # kill the node: if the model is truly absent, the chat call below
@@ -130,8 +136,9 @@ class OllamaPromptGenerator:
         response = client.chat(
             model=model,
             messages=messages,
+            think=bool(think),
             options=opts,
-            keep_alive=self.OLLAMA_KEEP_ALIVE,
+            keep_alive=keep_alive or None,
             stream=False,
         )
         return response["message"]["content"]
@@ -177,7 +184,7 @@ class OllamaPromptGenerator:
                     "OpenAI-compatible API error %s at %s: %s" % (e.code, endpoint, body[:500])
                 ) from e
 
-    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=DEFAULT_NUM_PREDICT, repeat_penalty=1.1):
+    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=DEFAULT_NUM_PREDICT, repeat_penalty=1.1, think=False, keep_alive=OLLAMA_KEEP_ALIVE):
         """Generates prompt using the configured LLM provider."""
         use_seed = seed if seed != 0 else None
         messages = self._build_messages(system_prompt, description, comma_separated_response)
@@ -186,10 +193,10 @@ class OllamaPromptGenerator:
         def call_llm():
             if llm_provider == "openai":
                 # Cloud models do not loop like small local ones, and reasoning
-                # models have provider-specific max_tokens semantics — caps
-                # apply to the Ollama path only.
+                # models have provider-specific max_tokens semantics — the
+                # Ollama-only knobs below do not apply there.
                 return self._chat_openai(base_url, api_key, model, messages, use_seed, timeout, temperature)
-            return self._chat_ollama(base_url, model, messages, use_seed, temperature, num_predict, repeat_penalty)
+            return self._chat_ollama(base_url, model, messages, use_seed, temperature, num_predict, repeat_penalty, think, keep_alive)
 
         prompt = call_llm()
         generated = self.sanitize_prompt(prompt)
