@@ -139,3 +139,10 @@ The old single `text` input is replaced by:
 - `repeat_penalty` (default 1.1, Ollama path only) — raises above 1.1 if a local model falls into tag-repetition loops.
 - `think` (default off, Ollama path only) — allows reasoning chains (qwen3 etc.). Off by default: chain-of-thought is useless for tag generation, slow, and burns through `num_predict` before any content is produced (models that ignore the flag still get inline `<think>` stripped).
 - `keep_alive` (default `1m`, Ollama path only) — how long the model stays in VRAM after a run (`1m`, `10m`, `-1` = forever; empty = server default). On an 8GB card, a resident 3–4GB LLM next to ComfyUI's diffusion models causes WDDM paging that slows generation ~10x; unloading after each run frees VRAM for sampling at the cost of a ~10s reload.
+
+### v2.5.0 — Iterate on a known-good prompt (optional inputs)
+
+- `last_prompt` — paste the prompt of a good roll here (copy it from a ShowText node).
+- `optimize` — merge mode: the LLM receives an optimizer persona (your `system_prompt` if set, otherwise a built-in one) plus 【原提示词】(`last_prompt`) and 【描述/优化点】(`description`), and returns the prompt with your refinements merged in — a good roll becomes the base for iteration instead of a from-scratch regeneration.
+- `lock` — skip the LLM entirely and output `last_prompt` verbatim: free, instant, prompt never drifts while you reroll the KSampler seed. Takes precedence over `optimize` when both are on.
+- `prepend_tags` are now merged only when missing from the output, so prompts that already carry the quality tags are not doubled up.

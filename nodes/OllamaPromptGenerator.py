@@ -25,6 +25,16 @@ SYSTEM_MESSAGES = {
     "comma": "You describe pictures. I will give you a brief description of the picture. You reply with comma separated keywords that describe the picture. Describe clothing, pose, expression, setting, and any other details you can think of. Use comma separated keywords. Do not use sentences. Use brevity.",
 }
 
+# Optimize mode: the user landed a good prompt and wants the LLM to merge
+# refinements from the description into it instead of regenerating fresh.
+OPTIMIZE_SYSTEM_MESSAGE = (
+    "你是 AI 绘图提示词优化器。用户消息中会给出【原提示词】和【描述/优化点】。"
+    "保留原提示词的结构和有效触发词，把描述中的新增或细化内容融合进去；"
+    "描述与原提示词冲突时，以描述为准。"
+    "输出完整的新提示词：一行、英文逗号分隔、全部小写、多词标签用下划线连接，"
+    "无解释、无思考过程、不要画质类标签。"
+)
+
 class OllamaPromptGenerator:
     # Defaults
     DEFAULT_TIMEOUT = 300
@@ -73,6 +83,15 @@ class OllamaPromptGenerator:
                                       "tooltip": "Ollama only. Allow reasoning chains (qwen3 etc.) - slower, unnecessary for tags"}),
                 "keep_alive": ("STRING", {"default": cls.OLLAMA_KEEP_ALIVE,
                                           "tooltip": "Ollama only. How long the model stays in VRAM after a run (1m, 10m, -1). Empty = server default"}),
+                # Iterate on a known-good prompt: optimize merges description
+                # refinements into it, lock reuses it verbatim without any LLM
+                # call (lock wins when both are on).
+                "optimize": ("BOOLEAN", {"default": False,
+                                         "tooltip": "优化模式：以 last_prompt 为基底，结合 description 里的细化/优化点让 LLM 融合出新提示词"}),
+                "lock": ("BOOLEAN", {"default": False,
+                                     "tooltip": "锁定模式：跳过 LLM，直接使用 last_prompt（与 optimize 同开时锁定优先）"}),
+                "last_prompt": ("STRING", {"multiline": True, "default": "",
+                                           "tooltip": "上次生成的提示词：从 ShowText 复制粘贴。optimize 的优化基底 / lock 的直接输出"}),
             },
         }
 
@@ -93,7 +112,17 @@ class OllamaPromptGenerator:
         prompt = re.sub(r"\s*,\s*,+", ", ", prompt)
         return prompt.strip(" ,\t\n")
 
-    def _build_messages(self, system_prompt, description, comma_separated_response):
+    def _build_messages(self, system_prompt, description, comma_separated_response, optimize=False, last_prompt=""):
+        if optimize:
+            system = (system_prompt or "").strip() or OPTIMIZE_SYSTEM_MESSAGE
+            user = ""
+            if (last_prompt or "").strip():
+                user += "【原提示词】" + last_prompt.strip() + "\n"
+            user += "【描述/优化点】" + (description or "").strip()
+            return [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
         system_prompt = (system_prompt or "").strip()
         if system_prompt:
             # Custom system prompt: the user has full control, no few-shot data.
@@ -197,10 +226,31 @@ class OllamaPromptGenerator:
                     "OpenAI-compatible API error %s at %s: %s" % (e.code, endpoint, body[:500])
                 ) from e
 
-    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=DEFAULT_NUM_PREDICT, repeat_penalty=1.1, think=False, keep_alive=OLLAMA_KEEP_ALIVE):
+    def get_prompt(self, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=DEFAULT_NUM_PREDICT, repeat_penalty=1.1, think=False, keep_alive=OLLAMA_KEEP_ALIVE, optimize=False, lock=False, last_prompt=""):
         """Generates prompt using the configured LLM provider."""
+        prepend = (prepend_tags or "").strip(" ,")
+
+        def merge_prepend(text):
+            # Prepend only when the text does not already carry it, so a
+            # prompt captured from this node is not doubled up.
+            if not prepend:
+                return text
+            if prepend.lower() in text.lower():
+                return text
+            return prepend + ", " + text if text else prepend
+
+        if lock:
+            # Lock: reuse a known-good prompt verbatim — no LLM call at all.
+            return (merge_prepend((last_prompt or "").strip()),)
+
+        if optimize:
+            # Optimize: merge the description's refinements into the last
+            # prompt instead of regenerating from scratch.
+            messages = self._build_messages(system_prompt, description, comma_separated_response, optimize=True, last_prompt=last_prompt or "")
+        else:
+            messages = self._build_messages(system_prompt, description, comma_separated_response)
+
         use_seed = seed if seed != 0 else None
-        messages = self._build_messages(system_prompt, description, comma_separated_response)
 
         @with_timeout(timeout)
         def call_llm():
@@ -213,8 +263,10 @@ class OllamaPromptGenerator:
 
         prompt = call_llm()
         generated = self.sanitize_prompt(prompt)
-        prepend = (prepend_tags or "").strip(" ,")
-        if prepend and generated:
+        if optimize:
+            # The base prompt usually already carries the prepend tags.
+            combined_prompt = merge_prepend(generated)
+        elif prepend and generated:
             combined_prompt = prepend + ", " + generated
         else:
             combined_prompt = prepend or generated
