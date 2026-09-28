@@ -264,7 +264,7 @@ class OllamaPromptGenerator:
             # Lock: reuse a known-good prompt verbatim — no LLM call at all.
             combined = merge_prepend(base)
             self._last_prompts[memory_key] = combined
-            return (combined,)
+            return {"ui": {"text": [combined]}, "result": (combined,)}
 
         if optimize:
             # Optimize: merge the description's refinements into the last
@@ -294,4 +294,4 @@ class OllamaPromptGenerator:
         else:
             combined_prompt = prepend or generated
         self._last_prompts[memory_key] = combined_prompt
-        return (combined_prompt,)
+        return {"ui": {"text": [combined_prompt]}, "result": (combined_prompt,)}

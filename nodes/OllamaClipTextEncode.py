@@ -46,4 +46,4 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
         # pure noise. See issue #11.
         cond_dict = clip.encode_from_tokens(tokens, return_pooled=True, return_dict=True)
         cond = cond_dict.pop("cond")
-        return ([[cond, cond_dict]], combined_prompt)
+        return {"ui": {"text": [combined_prompt]}, "result": ([[cond, cond_dict]], combined_prompt)}
