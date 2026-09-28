@@ -146,3 +146,8 @@ The old single `text` input is replaced by:
 - `optimize` — merge mode: the LLM receives an optimizer persona (your `system_prompt` if set, otherwise a built-in one) plus 【原提示词】(`last_prompt`) and 【描述/优化点】(`description`), and returns the prompt with your refinements merged in — a good roll becomes the base for iteration instead of a from-scratch regeneration.
 - `lock` — skip the LLM entirely and output `last_prompt` verbatim: free, instant, prompt never drifts while you reroll the KSampler seed. Takes precedence over `optimize` when both are on.
 - `prepend_tags` are now merged only when missing from the output, so prompts that already carry the quality tags are not doubled up.
+
+### v2.6.0 — Zero copy-paste (auto-backfill)
+
+The node remembers the final prompt it produced (per node instance, in RAM). With `optimize` or `lock` on and `last_prompt` left **empty**, the remembered prompt is used automatically — generate, reroll, then flip `optimize`/`lock` with nothing to copy. A non-empty `last_prompt` still overrides (e.g. to pin one specific roll). The memory clears when ComfyUI restarts; lock/optimize with no base at all raises a clear error instead of silently regenerating.
+
