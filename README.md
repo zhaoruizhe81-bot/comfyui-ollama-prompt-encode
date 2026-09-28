@@ -140,14 +140,8 @@ The old single `text` input is replaced by:
 - `think` (default off, Ollama path only) — allows reasoning chains (qwen3 etc.). Off by default: chain-of-thought is useless for tag generation, slow, and burns through `num_predict` before any content is produced (models that ignore the flag still get inline `<think>` stripped).
 - `keep_alive` (default `1m`, Ollama path only) — how long the model stays in VRAM after a run (`1m`, `10m`, `-1` = forever; empty = server default). On an 8GB card, a resident 3–4GB LLM next to ComfyUI's diffusion models causes WDDM paging that slows generation ~10x; unloading after each run frees VRAM for sampling at the cost of a ~10s reload.
 
-### v2.5.0 — Iterate on a known-good prompt (optional inputs)
+### v2.6.3 — Lock: reroll on the last prompt (optional input)
 
-- `last_prompt` — paste the prompt of a good roll here (copy it from a ShowText node).
-- `optimize` — merge mode: the LLM receives an optimizer persona (your `system_prompt` if set, otherwise a built-in one) plus 【原提示词】(`last_prompt`) and 【描述/优化点】(`description`), and returns the prompt with your refinements merged in — a good roll becomes the base for iteration instead of a from-scratch regeneration.
-- `lock` — skip the LLM entirely and output `last_prompt` verbatim: free, instant, prompt never drifts while you reroll the KSampler seed. Takes precedence over `optimize` when both are on.
-- `prepend_tags` are now merged only when missing from the output, so prompts that already carry the quality tags are not doubled up.
-
-### v2.6.0 — Zero copy-paste (auto-backfill)
-
-The node remembers the final prompt it produced (per node instance, in RAM). With `optimize` or `lock` on and `last_prompt` left **empty**, the remembered prompt is used automatically — generate, reroll, then flip `optimize`/`lock` with nothing to copy. A non-empty `last_prompt` still overrides (e.g. to pin one specific roll). The memory clears when ComfyUI restarts; lock/optimize with no base at all raises a clear error instead of silently regenerating.
-
+- `lock` — skip the LLM entirely and reuse this node's own previous output as the prompt. The final prompt of every run is auto-remembered per node instance (in RAM; cleared when ComfyUI restarts — run one normal generation first). Free, instant, and the prompt never drifts while you reroll the KSampler seed.
+- `prepend_tags` are merged only when missing from the stored prompt, so quality tags are not doubled up.
+- (The earlier `optimize` / `last_prompt` iteration experiment was removed in v2.6.3.)

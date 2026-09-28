@@ -35,12 +35,9 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
 
     CATEGORY = "Ollama"
 
-    def get_encoded(self, clip, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=1024, repeat_penalty=1.1, think=False, keep_alive="1m", optimize=False, lock=False, last_prompt="", unique_id=None):
+    def get_encoded(self, clip, llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature=0.8, num_predict=1024, repeat_penalty=1.1, think=False, keep_alive="1m", lock=False, unique_id=None):
         """Gets and encodes the prompt using CLIP."""
-        ret = self.get_prompt(llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature, num_predict, repeat_penalty, think, keep_alive, optimize, lock, last_prompt, unique_id)
-        # get_prompt returns {"ui": ..., "result": (...)} for the frontend
-        # backfill; tolerate a bare tuple in case of older call sites.
-        combined_prompt = (ret["result"] if isinstance(ret, dict) else ret)[0]
+        combined_prompt = self.get_prompt(llm_provider, base_url, api_key, model, seed, prepend_tags, system_prompt, description, comma_separated_response, timeout, temperature, num_predict, repeat_penalty, think, keep_alive, lock, unique_id)[0]
 
         tokens = clip.tokenize(combined_prompt)
         # return_dict=True keeps every extra key from encode_token_weights
@@ -49,4 +46,4 @@ class OllamaCLIPTextEncode(OllamaPromptGenerator):
         # pure noise. See issue #11.
         cond_dict = clip.encode_from_tokens(tokens, return_pooled=True, return_dict=True)
         cond = cond_dict.pop("cond")
-        return {"ui": {"text": [combined_prompt]}, "result": ([[cond, cond_dict]], combined_prompt)}
+        return ([[cond, cond_dict]], combined_prompt)
